@@ -236,17 +236,18 @@ jobs:
                 continue;
               }
 
-              itemStates.push({ id: item.id, section: itemSection });
+              const sizePoints = (itemSize && Object.hasOwn(sizeMap, itemSize))
+                ? sizeMap[itemSize]
+                : 0;
 
-              if (itemSize && Object.hasOwn(sizeMap, itemSize)) {
-                sectionTotals[itemSection] = (sectionTotals[itemSection] || 0) + sizeMap[itemSize];
-              }
+              itemStates.push({ id: item.id, section: itemSection, sizePoints });
+              sectionTotals[itemSection] = (sectionTotals[itemSection] || 0) + sizePoints;
             }
 
             let updatedCount = 0;
 
             for (const state of itemStates) {
-              const value = sectionTotals[state.section] || 0;
+              const value = state.sizePoints;
 
               await github.graphql(
                 `
@@ -277,5 +278,5 @@ jobs:
             }
 
             console.log(
-              `Updated ${updatedCount} items using section field ${sectionFieldName}`
+              `Updated ${updatedCount} items from Size map. Section totals: ${JSON.stringify(sectionTotals)}`
             );
