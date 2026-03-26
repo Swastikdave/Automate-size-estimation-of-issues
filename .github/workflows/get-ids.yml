@@ -1,0 +1,39 @@
+name: Get Project IDs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-ids:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: read
+      repository-projects: read
+
+    steps:
+      - name: Fetch Project + Field IDs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const result = await github.graphql(`
+              query {
+                viewer {
+                  projectV2(number: 1) {
+                    id
+                    title
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `);
+
+            console.log(JSON.stringify(result, null, 2));
