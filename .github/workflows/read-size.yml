@@ -1,10 +1,8 @@
-name: Estimate from Size field 
+name: Estimate from size
 
 on:
   issues:
     types: [opened, edited]
-  project_v2_item:
-    types: [edited]
 
 jobs:
   assign-points:
@@ -20,16 +18,9 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // Get issue node ID
-            let issueNodeId;
+            const issueNodeId = context.payload.issue.node_id;
 
-            if (context.eventName === "issues") {
-              issueNodeId = context.payload.issue.node_id;
-            } else {
-              issueNodeId = context.payload.project_v2_item.content_node_id;
-            }
-
-            // Fetch project item + fields + values
+            // Fetch project item + field values
             const data = await github.graphql(`
               query {
                 node(id: "${issueNodeId}") {
@@ -70,29 +61,29 @@ jobs:
             const items = data.node.projectItems.nodes;
 
             if (!items.length) {
-              console.log("Issue not in project");
+              console.log("Issue not in project yet");
               return;
             }
 
             const item = items[0];
             const projectId = item.project.id;
 
-            //  Extract Size value
+            //  Get Size value
             let sizeValue = null;
 
-            for (const fieldValue of item.fieldValues.nodes) {
-              if (fieldValue.field?.name === "Size") {
-                sizeValue = fieldValue.name;
+            for (const fv of item.fieldValues.nodes) {
+              if (fv.field?.name === "Size") {
+                sizeValue = fv.name;
                 break;
               }
             }
 
             if (!sizeValue) {
-              console.log("Size field not set");
+              console.log("Size not set");
               return;
             }
 
-            // Mapping Size → Points
+            //  Mapping
             const sizeMap = {
               XS: 1,
               S: 2,
@@ -104,7 +95,7 @@ jobs:
             const points = sizeMap[sizeValue];
 
             if (!points) {
-              console.log("Invalid size value:", sizeValue);
+              console.log("Invalid size:", sizeValue);
               return;
             }
 
@@ -118,16 +109,13 @@ jobs:
               return;
             }
 
-            const fieldId = estimateField.id;
-            const itemId = item.id;
-
             //  Update Estimate
             await github.graphql(`
               mutation {
                 updateProjectV2ItemFieldValue(input: {
                   projectId: "${projectId}",
-                  itemId: "${itemId}",
-                  fieldId: "${fieldId}",
+                  itemId: "${item.id}",
+                  fieldId: "${estimateField.id}",
                   value: { number: ${points} }
                 }) {
                   projectV2Item {
@@ -137,4 +125,4 @@ jobs:
               }
             `);
 
-            console.log(`✅ Size ${sizeValue} → ${points} points`);
+            console.log(` Size ${sizeValue} → ${points}`);
