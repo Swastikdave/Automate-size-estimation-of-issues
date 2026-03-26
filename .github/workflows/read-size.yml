@@ -32,7 +32,24 @@ jobs:
             const projectNumber = 1;
             const projectTitle = "Testing";
 
-            const projectListData = await github.graphql(
+            const viewerData = await github.graphql(
+              `
+              query {
+                viewer {
+                  login
+                  projectsV2(first: 100) {
+                    nodes {
+                      id
+                      number
+                      title
+                    }
+                  }
+                }
+              }
+              `
+            );
+
+            const ownerProjectListData = await github.graphql(
               `
               query($owner: String!) {
                 user(login: $owner) {
@@ -49,7 +66,22 @@ jobs:
               { owner: projectOwner }
             );
 
-            const projects = projectListData.user?.projectsV2?.nodes || [];
+            const viewerLogin = viewerData.viewer?.login || "unknown";
+            const viewerProjects = viewerData.viewer?.projectsV2?.nodes || [];
+            const ownerProjects = ownerProjectListData.user?.projectsV2?.nodes || [];
+
+            const projectsById = new Map();
+            for (const p of [...viewerProjects, ...ownerProjects]) {
+              if (p?.id) {
+                projectsById.set(p.id, p);
+              }
+            }
+            const projects = Array.from(projectsById.values());
+
+            console.log(
+              `Viewer=${viewerLogin}, viewerProjects=${viewerProjects.length}, ownerProjects=${ownerProjects.length}`
+            );
+
             const project = projects.find(p => p.number === projectNumber)
               || projects.find(p => p.title === projectTitle)
               || null;
