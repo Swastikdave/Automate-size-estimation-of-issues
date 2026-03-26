@@ -1,0 +1,115 @@
+name: Auto Assign Story Points
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled]
+
+jobs:
+  assign-points:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+      repository-projects: write
+
+    steps:
+      - name: Assign Story Points to Project
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNodeId = context.payload.issue.node_id;
+
+            // Fetch issue + project data
+            const data = await github.graphql(`
+              query {
+                node(id: "${issueNodeId}") {
+                  ... on Issue {
+                    labels(first: 10) {
+                      nodes { name }
+                    }
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project {
+                          id
+                          title
+                          fields(first: 20) {
+                            nodes {
+                              ... on ProjectV2Field {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `);
+
+            const labels = data.node.labels.nodes.map(l => l.name);
+
+            //  SIZE → POINTS MAPPING
+            const sizeMap = {
+              XS: 1,
+              S: 2,
+              M: 3,
+              L: 5,
+              XL: 8
+            };
+
+            let points = 0;
+
+            for (const label of labels) {
+              if (sizeMap[label]) {
+                points = sizeMap[label];
+                break;
+              }
+            }
+
+            if (points === 0) {
+              console.log("No valid size label found");
+              return;
+            }
+
+            const projectItems = data.node.projectItems.nodes;
+
+            if (!projectItems.length) {
+              console.log("Issue not in project yet");
+              return;
+            }
+
+            const item = projectItems[0];
+            const projectId = item.project.id;
+
+            // 🔍 Find "Estimate" field dynamically
+            const field = item.project.fields.nodes.find(f => f.name === "Estimate");
+
+            if (!field) {
+              console.log("Estimate field not found");
+              return;
+            }
+
+            const fieldId = field.id;
+            const itemId = item.id;
+
+            //  Update Estimate field
+            await github.graphql(`
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: "${projectId}",
+                  itemId: "${itemId}",
+                  fieldId: "${fieldId}",
+                  value: { number: ${points} }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `);
+
+            console.log(` Set ${points} points`);
