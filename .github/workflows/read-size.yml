@@ -111,7 +111,16 @@ jobs:
                   ... on ProjectV2 {
                     fields(first: 50) {
                       nodes {
+                        __typename
                         ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
                           id
                           name
                         }
@@ -126,6 +135,10 @@ jobs:
 
             const projectFields = projectFieldsData.node?.fields?.nodes || [];
 
+            console.log(
+              `Project fields: ${projectFields.map(f => `${f.name}(${f.__typename})`).join(", ")}`
+            );
+
             const estimateField = projectFields.find(
               f => f.name === "Estimate"
             );
@@ -135,16 +148,23 @@ jobs:
               return;
             }
 
-            const sectionFieldName = projectFields.some(f => f.name === "Status")
-              ? "Status"
-              : projectFields.some(f => f.name === "Section")
-                ? "Section"
-                : null;
+            const singleSelectFieldNames = projectFields
+              .filter(f => f.__typename === "ProjectV2SingleSelectField")
+              .map(f => f.name);
+
+            // Prefer common names, then fallback to any single-select field that is not Size.
+            const sectionFieldName = ["Status", "Section", "State", "Workflow", "Stage"].find(
+              name => singleSelectFieldNames.includes(name)
+            ) || singleSelectFieldNames.find(name => name !== "Size") || null;
 
             if (!sectionFieldName) {
-              console.log("No section field found (expected Status or Section)");
+              console.log(
+                `No section field found. Single-select fields seen: ${singleSelectFieldNames.join(", ") || "none"}`
+              );
               return;
             }
+
+            console.log(`Using section field: ${sectionFieldName}`);
 
             const fetchItemsPage = async (after) => {
               return github.graphql(
