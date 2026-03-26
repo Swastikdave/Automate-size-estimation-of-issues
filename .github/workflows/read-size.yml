@@ -1,8 +1,9 @@
 name: Estimate from size
 
 on:
-  issues:
-    types: [opened, edited]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
   assign-points:
@@ -14,76 +15,10 @@ jobs:
       repository-projects: write
 
     steps:
-      - name: Assign points from Size field
+      - name: Recalculate section estimates from Size
         uses: actions/github-script@v7
         with:
           script: |
-            const issueNodeId = context.payload.issue.node_id;
-
-            // Fetch project item + field values
-            const data = await github.graphql(`
-              query {
-                node(id: "${issueNodeId}") {
-                  ... on Issue {
-                    projectItems(first: 10) {
-                      nodes {
-                        id
-                        fieldValues(first: 20) {
-                          nodes {
-                            ... on ProjectV2ItemFieldSingleSelectValue {
-                              name
-                              field {
-                                ... on ProjectV2SingleSelectField {
-                                  name
-                                }
-                              }
-                            }
-                          }
-                        }
-                        project {
-                          id
-                          fields(first: 20) {
-                            nodes {
-                              ... on ProjectV2Field {
-                                id
-                                name
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `);
-
-            const items = data.node.projectItems.nodes;
-
-            if (!items.length) {
-              console.log("Issue not in project yet");
-              return;
-            }
-
-            const item = items[0];
-            const projectId = item.project.id;
-
-            //  Get Size value
-            let sizeValue = null;
-
-            for (const fv of item.fieldValues.nodes) {
-              if (fv.field?.name === "Size") {
-                sizeValue = fv.name;
-                break;
-              }
-            }
-
-            if (!sizeValue) {
-              console.log("Size not set");
-              return;
-            }
-
-            //  Mapping
             const sizeMap = {
               XS: 1,
               S: 2,
@@ -92,15 +27,39 @@ jobs:
               XL: 8
             };
 
-            const points = sizeMap[sizeValue];
+            const projectOwner = "Swastikdave";
+            const projectNumber = 1;
 
-            if (!points) {
-              console.log("Invalid size:", sizeValue);
+            const projectData = await github.graphql(
+              `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 50) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              `,
+              { owner: projectOwner, number: projectNumber }
+            );
+
+            const project = projectData.user?.projectV2;
+
+            if (!project?.id) {
+              console.log("Project not found. Check owner/number.");
               return;
             }
 
-            //  Find Estimate field
-            const estimateField = item.project.fields.nodes.find(
+            const projectId = project.id;
+            const estimateField = project.fields.nodes.find(
               f => f.name === "Estimate"
             );
 
@@ -109,20 +68,127 @@ jobs:
               return;
             }
 
-            //  Update Estimate
-            await github.graphql(`
-              mutation {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: "${projectId}",
-                  itemId: "${item.id}",
-                  fieldId: "${estimateField.id}",
-                  value: { number: ${points} }
-                }) {
-                  projectV2Item {
-                    id
+            const sectionFieldName = project.fields.nodes.some(f => f.name === "Status")
+              ? "Status"
+              : project.fields.nodes.some(f => f.name === "Section")
+                ? "Section"
+                : null;
+
+            if (!sectionFieldName) {
+              console.log("No section field found (expected Status or Section)");
+              return;
+            }
+
+            const fetchItemsPage = async (after) => {
+              return github.graphql(
+                `
+                query($projectId: ID!, $after: String) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      items(first: 100, after: $after) {
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
+                        nodes {
+                          id
+                          fieldValues(first: 50) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                name
+                                field {
+                                  ... on ProjectV2SingleSelectField {
+                                    name
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
                   }
                 }
-              }
-            `);
+                `,
+                { projectId, after }
+              );
+            };
 
-            console.log(` Size ${sizeValue} → ${points}`);
+            let allItems = [];
+            let after = null;
+
+            while (true) {
+              const page = await fetchItemsPage(after);
+              const itemsConnection = page.node.items;
+              allItems = allItems.concat(itemsConnection.nodes || []);
+
+              if (!itemsConnection.pageInfo.hasNextPage) {
+                break;
+              }
+
+              after = itemsConnection.pageInfo.endCursor;
+            }
+
+            const sectionTotals = {};
+            const itemStates = [];
+
+            for (const item of allItems) {
+              let itemSection = null;
+              let itemSize = null;
+
+              for (const fv of item.fieldValues.nodes) {
+                if (fv.field?.name === sectionFieldName) {
+                  itemSection = fv.name;
+                }
+                if (fv.field?.name === "Size") {
+                  itemSize = fv.name;
+                }
+              }
+
+              if (!itemSection) {
+                continue;
+              }
+
+              itemStates.push({ id: item.id, section: itemSection });
+
+              if (itemSize && Object.hasOwn(sizeMap, itemSize)) {
+                sectionTotals[itemSection] = (sectionTotals[itemSection] || 0) + sizeMap[itemSize];
+              }
+            }
+
+            let updatedCount = 0;
+
+            for (const state of itemStates) {
+              const value = sectionTotals[state.section] || 0;
+
+              await github.graphql(
+                `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
+                  updateProjectV2ItemFieldValue(
+                    input: {
+                      projectId: $projectId
+                      itemId: $itemId
+                      fieldId: $fieldId
+                      value: { number: $value }
+                    }
+                  ) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }
+                `,
+                {
+                  projectId,
+                  itemId: state.id,
+                  fieldId: estimateField.id,
+                  value
+                }
+              );
+
+              updatedCount += 1;
+            }
+
+            console.log(
+              `Updated ${updatedCount} items using section field ${sectionFieldName}`
+            );
