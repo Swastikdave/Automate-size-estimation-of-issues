@@ -1,0 +1,140 @@
+name: Estimate from Size field 
+
+on:
+  issues:
+    types: [opened, edited]
+  project_v2_item:
+    types: [edited]
+
+jobs:
+  assign-points:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: read
+      repository-projects: write
+
+    steps:
+      - name: Assign points from Size field
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get issue node ID
+            let issueNodeId;
+
+            if (context.eventName === "issues") {
+              issueNodeId = context.payload.issue.node_id;
+            } else {
+              issueNodeId = context.payload.project_v2_item.content_node_id;
+            }
+
+            // Fetch project item + fields + values
+            const data = await github.graphql(`
+              query {
+                node(id: "${issueNodeId}") {
+                  ... on Issue {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        fieldValues(first: 20) {
+                          nodes {
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field {
+                                ... on ProjectV2SingleSelectField {
+                                  name
+                                }
+                              }
+                            }
+                          }
+                        }
+                        project {
+                          id
+                          fields(first: 20) {
+                            nodes {
+                              ... on ProjectV2Field {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `);
+
+            const items = data.node.projectItems.nodes;
+
+            if (!items.length) {
+              console.log("Issue not in project");
+              return;
+            }
+
+            const item = items[0];
+            const projectId = item.project.id;
+
+            //  Extract Size value
+            let sizeValue = null;
+
+            for (const fieldValue of item.fieldValues.nodes) {
+              if (fieldValue.field?.name === "Size") {
+                sizeValue = fieldValue.name;
+                break;
+              }
+            }
+
+            if (!sizeValue) {
+              console.log("Size field not set");
+              return;
+            }
+
+            // Mapping Size → Points
+            const sizeMap = {
+              XS: 1,
+              S: 2,
+              M: 3,
+              L: 5,
+              XL: 8
+            };
+
+            const points = sizeMap[sizeValue];
+
+            if (!points) {
+              console.log("Invalid size value:", sizeValue);
+              return;
+            }
+
+            //  Find Estimate field
+            const estimateField = item.project.fields.nodes.find(
+              f => f.name === "Estimate"
+            );
+
+            if (!estimateField) {
+              console.log("Estimate field not found");
+              return;
+            }
+
+            const fieldId = estimateField.id;
+            const itemId = item.id;
+
+            //  Update Estimate
+            await github.graphql(`
+              mutation {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: "${projectId}",
+                  itemId: "${itemId}",
+                  fieldId: "${fieldId}",
+                  value: { number: ${points} }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `);
+
+            console.log(`✅ Size ${sizeValue} → ${points} points`);
