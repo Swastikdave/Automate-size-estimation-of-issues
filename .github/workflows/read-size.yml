@@ -18,6 +18,7 @@ jobs:
       - name: Recalculate section estimates from Size
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.PROJECTS_TOKEN || github.token }}
           script: |
             const sizeMap = {
               XS: 1,
@@ -29,13 +30,45 @@ jobs:
 
             const projectOwner = "Swastikdave";
             const projectNumber = 1;
+            const projectTitle = "Testing";
 
-            const projectData = await github.graphql(
+            const projectListData = await github.graphql(
               `
-              query($owner: String!, $number: Int!) {
+              query($owner: String!) {
                 user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
+                  projectsV2(first: 100) {
+                    nodes {
+                      id
+                      number
+                      title
+                    }
+                  }
+                }
+              }
+              `,
+              { owner: projectOwner }
+            );
+
+            const projects = projectListData.user?.projectsV2?.nodes || [];
+            const project = projects.find(p => p.number === projectNumber)
+              || projects.find(p => p.title === projectTitle)
+              || null;
+
+            if (!project) {
+              const known = projects.map(p => `${p.number}:${p.title}`).join(", ");
+              console.log(
+                `Project not found. Tried number=${projectNumber} and title='${projectTitle}'. Visible projects: ${known || "none"}`
+              );
+              return;
+            }
+
+            const projectId = project.id;
+
+            const projectFieldsData = await github.graphql(
+              `
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
                     fields(first: 50) {
                       nodes {
                         ... on ProjectV2Field {
@@ -48,18 +81,12 @@ jobs:
                 }
               }
               `,
-              { owner: projectOwner, number: projectNumber }
+              { projectId }
             );
 
-            const project = projectData.user?.projectV2;
+            const projectFields = projectFieldsData.node?.fields?.nodes || [];
 
-            if (!project?.id) {
-              console.log("Project not found. Check owner/number.");
-              return;
-            }
-
-            const projectId = project.id;
-            const estimateField = project.fields.nodes.find(
+            const estimateField = projectFields.find(
               f => f.name === "Estimate"
             );
 
@@ -68,9 +95,9 @@ jobs:
               return;
             }
 
-            const sectionFieldName = project.fields.nodes.some(f => f.name === "Status")
+            const sectionFieldName = projectFields.some(f => f.name === "Status")
               ? "Status"
-              : project.fields.nodes.some(f => f.name === "Section")
+              : projectFields.some(f => f.name === "Section")
                 ? "Section"
                 : null;
 
